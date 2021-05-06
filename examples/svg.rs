@@ -1,6 +1,11 @@
 use std::ffi::{CStr, CString};
 use gl::types::{GLuint, GLint, GLchar, GLenum, GLvoid, GLsizei};
 
+use glutin::event::{Event, WindowEvent};
+use glutin::event_loop::{ControlFlow, EventLoop};
+use glutin::window::WindowBuilder;
+use glutin::ContextBuilder;
+
 use ochre::{Mat2x2, PathCmd, Rasterizer, TileBuilder, Transform, Vec2, TILE_SIZE};
 
 macro_rules! offset {
@@ -88,17 +93,17 @@ impl TileBuilder for Builder {
 }
 
 fn main() {
-    let mut events_loop = glutin::EventsLoop::new();
-    let window_builder = glutin::WindowBuilder::new()
-        .with_dimensions(glutin::dpi::LogicalSize::new(SCREEN_WIDTH as f64, SCREEN_HEIGHT as f64))
-        .with_title("ochre");
-    let context = glutin::ContextBuilder::new()
-        .with_vsync(false)
-        .build_windowed(window_builder, &events_loop)
-        .unwrap();
-    let context = unsafe { context.make_current() }.unwrap();
+    let mut el = EventLoop::new();
 
-    gl::load_with(|symbol| context.get_proc_address(symbol) as *const _);
+    let wb = WindowBuilder::new()
+        .with_inner_size(glutin::dpi::LogicalSize::new(SCREEN_WIDTH as f64, SCREEN_HEIGHT as f64))
+        .with_title("Ochre");
+
+
+    let windowed_context = ContextBuilder::new().with_vsync(false).build_windowed(wb, &el).unwrap();
+    let windowed_context = unsafe { windowed_context.make_current().unwrap() };
+
+    gl::load_with(|symbol| windowed_context.get_proc_address(symbol) as *const _);
 
     let path = std::env::args().nth(1).expect("provide an svg file");
     let tree = usvg::Tree::from_file(path, &usvg::Options::default()).unwrap();
@@ -225,36 +230,32 @@ fn main() {
         gl::Uniform1i(tex_uniform, 0);
     }
 
-    let mut running = true;
-    while running {
-        unsafe {
-            gl::ClearColor(1.0, 1.0, 1.0, 1.0);
-            gl::Clear(gl::COLOR_BUFFER_BIT);
-            gl::DrawElements(gl::TRIANGLES, builder.indices.len() as GLint, gl::UNSIGNED_INT, 0 as *const std::ffi::c_void);
-        }
+    el.run(move |event, _, control_flow| {
+        
+        *control_flow = ControlFlow::Wait;
 
-        context.swap_buffers().unwrap();
-
-        events_loop.poll_events(|event| match event {
-            glutin::Event::WindowEvent { event, .. } => {
-                use glutin::WindowEvent::*;
-                match event {
-                    CloseRequested => {
-                        running = false;
-                    }
-                    _ => {}
+        match event {
+            Event::LoopDestroyed => return,
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::Resized(physical_size) => windowed_context.resize(physical_size),
+                WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                _ => (),
+            },
+            Event::RedrawRequested(_) => {
+                println!("num indices: {}", builder.indices.len());
+                unsafe {
+                    gl::ClearColor(1.0, 1.0, 1.0, 1.0);
+                    gl::Clear(gl::COLOR_BUFFER_BIT);
+                    gl::DrawElements(gl::TRIANGLES, builder.indices.len() as GLint, gl::UNSIGNED_INT, 0 as *const std::ffi::c_void);
                 }
+                windowed_context.swap_buffers().unwrap();
             }
-            _ => {}
-        });
-    }
+            _ => (),
+        }
+    });
 
-    unsafe {
-        gl::DeleteTextures(1, &tex);
-        gl::DeleteVertexArrays(1, &vao);
-        gl::DeleteBuffers(1, &vbo);
-        gl::DeleteBuffers(1, &ibo);
-    }
+
+    
 }
 
 struct Program {
