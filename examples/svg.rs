@@ -3,8 +3,12 @@ use gl::types::{GLuint, GLint, GLchar, GLenum, GLvoid, GLsizei};
 
 use glutin::event::{Event, WindowEvent};
 use glutin::event_loop::{ControlFlow, EventLoop};
-use glutin::window::WindowBuilder;
+use glutin::window::{Fullscreen, WindowBuilder};
 use glutin::ContextBuilder;
+use glutin::monitor::{MonitorHandle, VideoMode};
+
+
+use std::io::{stdin, stdout, Write};
 
 use ochre::{Mat2x2, PathCmd, Rasterizer, TileBuilder, Transform, Vec2, TILE_SIZE};
 
@@ -12,8 +16,8 @@ macro_rules! offset {
     ($type:ty, $field:ident) => { &(*(0 as *const $type)).$field as *const _ as usize }
 }
 
-const SCREEN_WIDTH: u32 = 800;
-const SCREEN_HEIGHT: u32 = 600;
+const SCREEN_WIDTH: u32 = 900;
+const SCREEN_HEIGHT: u32 = 900;
 
 const ATLAS_SIZE: usize = 4096;
 
@@ -68,9 +72,15 @@ impl TileBuilder for Builder {
         self.vertices.push(Vertex { pos: [x, y + TILE_SIZE as i16], col: self.color, uv: [u1, v2] });
         self.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 
+        let nr : usize = self.next_row as usize * TILE_SIZE * ATLAS_SIZE;
+        let nc : usize = self.next_col as usize * TILE_SIZE;
+
         for row in 0..TILE_SIZE {
+            let ra: usize = row * ATLAS_SIZE;
+            let rt: usize = row * TILE_SIZE;
+
             for col in 0..TILE_SIZE {
-                self.atlas[self.next_row as usize * TILE_SIZE * ATLAS_SIZE + row * ATLAS_SIZE + self.next_col as usize * TILE_SIZE + col] = data[row * TILE_SIZE + col];
+                self.atlas[nr + ra + nc + col] = data[rt + col];
             }
         }
 
@@ -92,11 +102,37 @@ impl TileBuilder for Builder {
     }
 }
 
+// Enumerate monitors and prompt user to choose one
+fn prompt_for_monitor(el: &EventLoop<()>) -> MonitorHandle {
+    for (num, monitor) in el.available_monitors().enumerate() {
+        println!("Monitor #{}: {:?}", num, monitor.name());
+    }
+
+    print!("Please write the number of the monitor to use: ");
+    stdout().flush().unwrap();
+
+    let mut num = String::new();
+    stdin().read_line(&mut num).unwrap();
+    let num = num.trim().parse().ok().expect("Please enter a number");
+    let monitor = el.available_monitors().nth(num).expect("Please enter a valid ID");
+
+    println!("Using {:?}", monitor.name());
+    monitor
+}
+
+
 fn main() {
-    let mut el = EventLoop::new();
+    let el = EventLoop::new();
+
+    let num: i16 = 2;
+    let fullscreen = Some(match num {
+        2 => Fullscreen::Borderless(Some(prompt_for_monitor(&el))),
+        _ => panic!("Please enter a valid number"),
+    });
 
     let wb = WindowBuilder::new()
-        .with_inner_size(glutin::dpi::LogicalSize::new(SCREEN_WIDTH as f64, SCREEN_HEIGHT as f64))
+        //.with_inner_size(glutin::dpi::LogicalSize::new(SCREEN_WIDTH as f64, SCREEN_HEIGHT as f64))
+        .with_fullscreen(fullscreen.clone())
         .with_title("Ochre");
 
 
@@ -112,28 +148,34 @@ fn main() {
 
     fn render(node: &usvg::Node, builder: &mut Builder) {
         use usvg::NodeExt;
+
+        let s: f32 = 1.0;
         match *node.borrow() {
             usvg::NodeKind::Path(ref p) => {
                 let t = node.transform();
                 let transform = Transform::new(Mat2x2::new(
-                    t.a as f32, t.c as f32,
-                    t.b as f32, t.d as f32,
+                    t.a as f32 * s, t.c as f32,
+                    t.b as f32, t.d as f32 * s,
                 ), Vec2::new(t.e as f32, t.f as f32));
 
                 let mut path = Vec::new();
+
+                let ws: f32 = 1.0;//&SCREEN_WIDTH as f32 / 512.;
+                let hs: f32 = 1.0;//&SCREEN_HEIGHT as f32 / 512.;
+
                 for segment in p.data.0.iter() {
                     match *segment {
                         usvg::PathSegment::MoveTo { x, y } => {
-                            path.push(PathCmd::Move(Vec2::new(x as f32, y as f32)));
+                            path.push(PathCmd::Move(Vec2::new(x as f32 * ws, y as f32 * hs)));
                         }
                         usvg::PathSegment::LineTo { x, y } => {
-                            path.push(PathCmd::Line(Vec2::new(x as f32, y as f32)));
+                            path.push(PathCmd::Line(Vec2::new(x as f32 * ws, y as f32 * hs)));
                         }
                         usvg::PathSegment::CurveTo { x1, y1, x2, y2, x, y } => {
                             path.push(PathCmd::Cubic(
-                                Vec2::new(x1 as f32, y1 as f32),
-                                Vec2::new(x2 as f32, y2 as f32),
-                                Vec2::new(x as f32, y as f32),
+                                Vec2::new(x1 as f32 * ws, y1 as f32 * hs),
+                                Vec2::new(x2 as f32 * ws, y2 as f32 * hs),
+                                Vec2::new(x as f32 * ws, y as f32 * hs),
                             ));
                         }
                         usvg::PathSegment::ClosePath => {
@@ -153,10 +195,10 @@ fn main() {
 
                 if let Some(ref s) = p.stroke {
                     if let usvg::Paint::Color(color) = s.paint {
-                        builder.color = [color.red, color.green, color.blue, s.opacity.to_u8()];
-                        let mut rasterizer = Rasterizer::new();
-                        rasterizer.stroke(&path, s.width.value() as f32, transform);
-                        rasterizer.finish(builder);
+                         builder.color = [color.red, color.green, color.blue, s.opacity.to_u8()];
+                         let mut rasterizer = Rasterizer::new();
+                         rasterizer.stroke(&path, s.width.value() as f32, transform);
+                         rasterizer.finish(builder);
                     }
                 }
             }
@@ -237,17 +279,30 @@ fn main() {
         match event {
             Event::LoopDestroyed => return,
             Event::WindowEvent { event, .. } => match event {
-                WindowEvent::Resized(physical_size) => windowed_context.resize(physical_size),
+                WindowEvent::Resized(physical_size) => {
+                 
+                    println!("{:?}", physical_size);
+                    windowed_context.resize(physical_size);
+                    unsafe {
+                        let res = gl::GetUniformLocation(prog.id, b"res\0" as *const u8 as *const i8);
+                        gl::Uniform2ui(res, physical_size.width, physical_size.height);
+                        gl::Viewport(0,0,physical_size.width as i32, physical_size.height as i32);
+                    }
+                    render(&tree.root(), &mut builder);               
+                    windowed_context.swap_buffers().unwrap();
+                    
+                    println!("Rendered");
+                },
                 WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
                 _ => (),
             },
             Event::RedrawRequested(_) => {
-                println!("num indices: {}", builder.indices.len());
                 unsafe {
                     gl::ClearColor(1.0, 1.0, 1.0, 1.0);
                     gl::Clear(gl::COLOR_BUFFER_BIT);
                     gl::DrawElements(gl::TRIANGLES, builder.indices.len() as GLint, gl::UNSIGNED_INT, 0 as *const std::ffi::c_void);
                 }
+                render(&tree.root(), &mut builder);               
                 windowed_context.swap_buffers().unwrap();
             }
             _ => (),
