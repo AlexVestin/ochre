@@ -35,6 +35,7 @@ struct Builder {
     next_row: u16,
     next_col: u16,
     color: [u8; 4],
+    counter: u32
 }
 
 impl Builder {
@@ -53,6 +54,7 @@ impl Builder {
             next_row: 0,
             next_col: 1,
             color: [255; 4],
+            counter: 0,
         }
     }
 }
@@ -81,6 +83,9 @@ impl TileBuilder for Builder {
 
             for col in 0..TILE_SIZE {
                 self.atlas[nr + ra + nc + col] = data[rt + col];
+                if data[rt +col] != 0 && data[rt + col] < 255 {
+                    self.counter+=1;
+                }
             }
         }
 
@@ -93,6 +98,7 @@ impl TileBuilder for Builder {
 
     fn span(&mut self, x: i16, y: i16, width: u16) {
         let base = self.vertices.len() as u32;
+        print!("Spanning: {} {} {}\n", x, y, width);
 
         self.vertices.push(Vertex { pos: [x, y], col: self.color, uv: [0, 0] });
         self.vertices.push(Vertex { pos: [x + (width as i16), y], col: self.color, uv: [0, 0] });

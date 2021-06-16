@@ -7,6 +7,7 @@
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include "jpeglib.h"
 
 struct Vertex {
     int16_t pos[2];
@@ -15,7 +16,7 @@ struct Vertex {
 };
 
 constexpr int TILE_SIZE = 8;
-constexpr int ATLAS_SIZE = 1024;
+constexpr int ATLAS_SIZE = 256;
 
 constexpr float TOLERANCE = 0.005;
 
@@ -35,13 +36,47 @@ enum class PathVerb {
 
 struct TileBuilder {
     virtual void Tile(uint32_t w, uint32_t h, std::vector<uint8_t>&tile) = 0;
-    virtual void Span(uint32_t w, uint32_t h, uint32_t k) = 0;
+    virtual void Span(int16_t x, int16_t y, int16_t width) = 0;
     virtual const uint8_t* GetAtlas() const = 0; 
     virtual const std::vector<Vertex> GetVertices() const = 0; 
     virtual const std::vector<uint32_t> GetIndices() const = 0; 
 
 
 };
+
+void write_to_img(std::string& name, const uint8_t* pdata, int screenWidth, int screenHeight) {
+  const int num_components = 1;
+  //unsigned char* pdata = new unsigned char[screenWidth * screenHeight * num_components];
+  //glReadPixels(0, 0, screenWidth, screenHeight, GL_RGBA, GL_UNSIGNED_BYTE, pdata);
+
+  FILE* outfile;
+  std::string pre = "texture.jpg";
+  if ((outfile = fopen(pre.c_str(), "wb")) == NULL) {
+    printf("can't open %s");
+    exit(1);
+  }
+  struct jpeg_compress_struct cinfo;
+  struct jpeg_error_mgr jerr;
+  cinfo.err = jpeg_std_error(&jerr);
+  jpeg_create_compress(&cinfo);
+  jpeg_stdio_dest(&cinfo, outfile);
+  cinfo.image_width = screenWidth;
+  cinfo.image_height = screenHeight;
+  cinfo.input_components = num_components;
+  cinfo.in_color_space = JCS_GRAYSCALE;
+  jpeg_set_defaults(&cinfo);
+  jpeg_set_quality(&cinfo, 100, true);
+  jpeg_start_compress(&cinfo, true);
+  JSAMPROW row_pointer;
+  int row_stride = screenWidth * num_components;
+  while (cinfo.next_scanline < cinfo.image_height) {
+    row_pointer = (JSAMPROW)&pdata[cinfo.next_scanline * row_stride];
+    jpeg_write_scanlines(&cinfo, &row_pointer, 1);
+  }
+  jpeg_finish_compress(&cinfo);
+  fclose(outfile);
+  jpeg_destroy_compress(&cinfo);
+}
 
 struct Increment {
     i16 x;
@@ -313,14 +348,19 @@ private:
     std::vector<uint8_t> atlas;
     uint16_t next_col;
     uint16_t next_row;
+    uint32_t counter;
 
 public:
-    VertexBuilder(): next_col(0), next_row(0) {
+    VertexBuilder(): next_col(1), next_row(0), counter(0) {
         atlas.resize(ATLAS_SIZE * ATLAS_SIZE);
+        for(int i = 0; i < ATLAS_SIZE * ATLAS_SIZE; i++) {
+            atlas[i] = 255;
+        }
     }
 
     virtual void Tile(uint32_t x, uint32_t y, std::vector<uint8_t>&tile) {
         uint32_t base = vertices.size();
+        
 
         uint16_t u1 = next_col * TILE_SIZE;
         uint16_t u2 = (next_col+1) * TILE_SIZE;
@@ -359,12 +399,19 @@ public:
             next_row += 1;
         }
     };
-    virtual void Span(uint32_t x, uint32_t y, uint32_t width) {
+
+    virtual void Span(int16_t x, int16_t y, int16_t width) {
         uint32_t base = vertices.size();
+
         Vertex vert0 = { x, y, 0, 0, 255, 0, 0, 255  };
-        Vertex vert1 = { x + TILE_SIZE, y, 0, 0, 255, 0, 0, 255  };
-        Vertex vert2 = { x + TILE_SIZE, y + TILE_SIZE, 0, 0, 255, 0, 0, 255  };
+        Vertex vert1 = { x + width, y, 0, 0, 255, 0, 0, 255  };
+        Vertex vert2 = { x + width, y + TILE_SIZE, 0, 0, 255, 0, 0, 255  };
         Vertex vert3 = { x, y + TILE_SIZE, 0, 0, 255, 0, 0, 255  };
+
+        vertices.push_back(vert0);
+        vertices.push_back(vert1);
+        vertices.push_back(vert2);
+        vertices.push_back(vert3);
 
         std::vector<uint32_t> new_indices = { base, base + 1, base + 2, base, base + 2, base + 3 };
         indices.insert(indices.end(), std::begin(new_indices), std::end(new_indices));
@@ -398,6 +445,7 @@ out vec4 v_col;
 void main() {
     vec2 scaled = 2.0 * pos / vec2(res);
     gl_Position = vec4(scaled.x - 1.0, 1.0 - scaled.y, 0.0, 1.0);
+
     v_uv = uv / vec2(atlas_size);
     v_col = col;
 };)";
@@ -411,7 +459,9 @@ in vec4 v_col;
 out vec4 f_col;
 
 void main() {
-    f_col = v_col * vec4(1.0, 1.0, 1.0, texture(tex, v_uv).r);
+    //f_col =  vec4(1.0, 0.0, 0.0, 1.0); //v_col * vec4(texture(tex, v_uv).r);
+    f_col =  vec4(1.0, 0.0, 0.0, 1.0) * vec4(1.0, 1.0, 1.0, texture(tex, v_uv).r);
+
 }
 ;)";
 
@@ -453,8 +503,8 @@ int main() {
         throw;
     }
 
-    const int width = 1280;
-    const int height = 720;
+    const int width = 1920;
+    const int height = 1080;
 
     GLFWwindow* window = glfwCreateWindow(width, height, "Render view", NULL, NULL);
     glfwMakeContextCurrent(window);
@@ -486,6 +536,9 @@ int main() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, ATLAS_SIZE, ATLAS_SIZE, 0, GL_RED, GL_UNSIGNED_BYTE, vb.GetAtlas());
+
+    std::string name = "texture";
+    write_to_img(name, vb.GetAtlas(), ATLAS_SIZE, ATLAS_SIZE);
 
     GLuint vao, vbo, ibo;
     glGenVertexArrays(1, &vao);
@@ -530,7 +583,7 @@ int main() {
     texUniform =  glGetUniformLocation(prog, "tex");
     glUniform1i(texUniform, 0);
 
-    glViewport(0,0,width,height);
+    glViewport(0, 0, width,height);
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
