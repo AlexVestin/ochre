@@ -3,7 +3,7 @@ use crate::{flatten, stroke, PathCmd, Transform, Vec2};
 /// The tile size used by the rasterizer (not configurable).
 pub const TILE_SIZE: usize = 8;
 
-const TOLERANCE: f32 = 0.1;
+pub const TOLERANCE: f32 = 0.005;
 
 /// A trait to implement for consuming the tile data produced by a
 /// [`Rasterizer`].
@@ -94,16 +94,20 @@ impl Rasterizer {
             let x_step = dtdx.abs();
             let y_step = dtdy.abs();
 
+
             loop {
                 let t0 = row_t0.max(col_t0);
                 let t1 = row_t1.min(col_t1);
                 let p0 = (1.0 - t0) * self.last + t0 * point;
                 let p1 = (1.0 - t1) * self.last + t1 * point;
+
+
                 let height = p1.y - p0.y;
                 let right = (x + 1) as f32;
                 let area = 0.5 * height * ((right - p0.x) + (right - p1.x));
 
                 self.increments.push(Increment { x, y, area, height });
+                //print!("{} {} {}\n", t1, row_t1, col_t1);
 
                 if row_t1 < col_t1 {
                     row_t0 = row_t1;
@@ -122,6 +126,7 @@ impl Rasterizer {
 
                 let tile_y = y.wrapping_div_euclid(TILE_SIZE as i16);
                 if tile_y != self.tile_y_prev {
+                    //print!("Adding increment: {} {} {} \n", x.wrapping_div_euclid(TILE_SIZE as i16), self.tile_y_prev.min(tile_y));
                     self.tile_increments.push(TileIncrement {
                         tile_x: x.wrapping_div_euclid(TILE_SIZE as i16),
                         tile_y: self.tile_y_prev.min(tile_y),
@@ -199,6 +204,9 @@ impl Rasterizer {
         for (i, increment) in self.increments.iter().enumerate() {
             let tile_x = increment.x.wrapping_div_euclid(TILE_SIZE as i16);
             let tile_y = increment.y.wrapping_div_euclid(TILE_SIZE as i16);
+
+            //print!("{} {} {} {} {} {}\n", increment.x, increment.y, tile_x, bin.tile_x, tile_y, bin.tile_y);
+
             if tile_x != bin.tile_x || tile_y != bin.tile_y {
                 bins.push(bin);
                 bin = Bin { tile_x, tile_y, start: i, end: i };
@@ -217,12 +225,12 @@ impl Rasterizer {
 
         let mut tile_increments_i = 0;
         let mut winding = 0;
-
         for i in 0..bins.len() {
             let bin = bins[i];
             for increment in &self.increments[bin.start..bin.end] {
                 let x = (increment.x as usize).wrapping_rem_euclid(TILE_SIZE);
                 let y = (increment.y as usize).wrapping_rem_euclid(TILE_SIZE);
+                //print!("{} {} {} {}\n", x, y, increment.area, increment.height);
                 areas[(y * TILE_SIZE + x) as usize] += increment.area;
                 heights[(y * TILE_SIZE + x) as usize] += increment.height;
             }
@@ -231,6 +239,7 @@ impl Rasterizer {
                 let mut tile = [0; TILE_SIZE * TILE_SIZE];
                 for y in 0..TILE_SIZE {
                     let mut accum = prev[y];
+
                     for x in 0..TILE_SIZE {
                         tile[y * TILE_SIZE + x] = ((accum + areas[y * TILE_SIZE + x]).abs() * 256.0).min(255.0) as u8;
                         accum += heights[y * TILE_SIZE + x];

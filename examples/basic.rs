@@ -15,7 +15,7 @@ impl TileBuilder for Builder {
     }
 
     fn span(&mut self, x: i16, y: i16, width: u16) {
-        println!("span at ({}, {}), width {}", x, y, width);
+        //println!("span at ({}, {}), width {}", x, y, width);
     }
 }
 
@@ -23,10 +23,29 @@ fn main() {
     let mut builder = Builder;
 
     let mut rasterizer = Rasterizer::new();
+
+    // commands.push_back(static_cast<float>(PathVerb::kMove));
+    // commands.push_back(static_cast<float>(100));
+    // commands.push_back(static_cast<float>(200));
+
+    // commands.push_back(static_cast<float>(PathVerb::kLine));
+    // commands.push_back(static_cast<float>(300));
+    // commands.push_back(static_cast<float>(200));
+
+    // commands.push_back(static_cast<float>(PathVerb::kLine));
+    // commands.push_back(static_cast<float>(300));
+    // commands.push_back(static_cast<float>(400));
+
+    // commands.push_back(static_cast<float>(PathVerb::kLine));
+    // commands.push_back(static_cast<float>(100));
+    // commands.push_back(static_cast<float>(400));
+
+
     rasterizer.fill(&[
-        PathCmd::Move(Vec2::new(400.0, 300.0)),
-        PathCmd::Quadratic(Vec2::new(500.0, 200.0), Vec2::new(400.0, 100.0)),
-        PathCmd::Cubic(Vec2::new(350.0, 150.0), Vec2::new(100.0, 250.0), Vec2::new(400.0, 300.0)),
+        PathCmd::Move(Vec2::new(100.0, 200.0)),
+        PathCmd::Line(Vec2::new(300.0, 200.0)),
+        PathCmd::Line(Vec2::new(300.0, 400.0)),
+        PathCmd::Line(Vec2::new(100.0, 300.0)),
         PathCmd::Close,
     ], Transform::id());
     rasterizer.finish(&mut builder);

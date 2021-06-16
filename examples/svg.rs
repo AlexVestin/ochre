@@ -10,7 +10,7 @@ use glutin::monitor::{MonitorHandle, VideoMode};
 
 use std::io::{stdin, stdout, Write};
 
-use ochre::{Mat2x2, PathCmd, Rasterizer, TileBuilder, Transform, Vec2, TILE_SIZE};
+use ochre::{Mat2x2, PathCmd, Rasterizer, TileBuilder, Transform, Vec2, TILE_SIZE, TOLERANCE};
 
 macro_rules! offset {
     ($type:ty, $field:ident) => { &(*(0 as *const $type)).$field as *const _ as usize }
@@ -19,7 +19,7 @@ macro_rules! offset {
 const SCREEN_WIDTH: u32 = 900;
 const SCREEN_HEIGHT: u32 = 900;
 
-const ATLAS_SIZE: usize = 4096;
+const ATLAS_SIZE: usize = 1024;
 
 #[derive(Copy, Clone)]
 pub struct Vertex {
@@ -146,7 +146,7 @@ fn main() {
 
     let mut builder = Builder::new();
 
-    fn render(node: &usvg::Node, builder: &mut Builder) {
+    fn render(node: &usvg::Node, builder: &mut Builder) {/*
         use usvg::NodeExt;
 
         let s: f32 = 1.0;
@@ -208,6 +208,17 @@ fn main() {
         for child in node.children() {
             render(&child, builder);
         }
+        */
+        let mut rasterizer = Rasterizer::new();
+        rasterizer.fill(&[
+            PathCmd::Move(Vec2::new(100.0, 200.0)),
+            PathCmd::Line(Vec2::new(300.0, 200.0)),
+            PathCmd::Line(Vec2::new(300.0, 400.0)),
+            PathCmd::Line(Vec2::new(100.0, 300.0)),
+            PathCmd::Close,
+        ], Transform::id());
+        builder.color = [255, 0, 0, 255];
+        rasterizer.finish(builder);
     }
 
     render(&tree.root(), &mut builder);
@@ -271,6 +282,8 @@ fn main() {
         let tex_uniform = gl::GetUniformLocation(prog.id, b"tex\0" as *const u8 as *const i8);
         gl::Uniform1i(tex_uniform, 0);
     }
+
+    println!("tolerance: {}", TOLERANCE);
 
     el.run(move |event, _, control_flow| {
         
