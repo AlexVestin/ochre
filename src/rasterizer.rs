@@ -205,8 +205,6 @@ impl Rasterizer {
             let tile_x = increment.x.wrapping_div_euclid(TILE_SIZE as i16);
             let tile_y = increment.y.wrapping_div_euclid(TILE_SIZE as i16);
 
-            //print!("{} {} {} {} {} {}\n", increment.x, increment.y, tile_x, bin.tile_x, tile_y, bin.tile_y);
-
             if tile_x != bin.tile_x || tile_y != bin.tile_y {
                 bins.push(bin);
                 bin = Bin { tile_x, tile_y, start: i, end: i };

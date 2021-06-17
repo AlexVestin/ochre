@@ -9,6 +9,12 @@
 #include <GLFW/glfw3.h>
 #include "jpeglib.h"
 
+#include <xmmintrin.h>
+#include <emmintrin.h>
+#include <pmmintrin.h>
+#include <smmintrin.h>
+#include <immintrin.h>
+
 struct Vertex {
     int16_t pos[2];
     uint16_t uv[2];
@@ -16,23 +22,142 @@ struct Vertex {
 };
 
 constexpr int TILE_SIZE = 8;
-constexpr int ATLAS_SIZE = 256;
+constexpr int ATLAS_SIZE = 1024;
 
 constexpr float TOLERANCE = 0.005;
 
 #define i16 int32_t
 #define f32 float
 
-
 enum class PathVerb {
-    kMove,   //!< SkPath::RawIter returns 1 point
-    kLine,   //!< SkPath::RawIter returns 2 points
-    kQuad,   //!< SkPath::RawIter returns 3 points
-    kClose,   //!< SkPath::RawIter returns 0 points
-    kConic,  //!< SkPath::RawIter returns 3 points + 1 weight
-    kCubic  //!< SkPath::RawIter returns 4 points
+    kMove,   
+    kLine,   
+    kQuad,   
+    kClose,  
+    kConic,  
+    kCubic   
 };
 
+
+void Join(std::vector<float>& path, std::vector<float>& commands, float width, VPoint prevNormal, VPoint nextNormal, VPoint point) {
+    float offset = 1.0 / (1.0 + prevNormal.Dot(nextNormal));
+    if (fabs(offset) > 2.0) {
+        path.push_back(static_cast<float>(PathVerb::kLine));
+        VPoint p0 = point + 0.5 * width * prevNormal;
+        path.push_back(p0.fX);
+        path.push_back(p0.fY);
+
+        path.push_back(static_cast<float>(PathVerb::kLine));
+        VPoint p1 = point + 0.5 * width * nextNormal;
+        path.push_back(p1.fX);
+        path.push_back(p1.fY);
+    } else {
+        path.push_back(static_cast<float>(PathVerb::kLine));
+        VPoint p0 = point + 0.5 * width * offset * (prevNormal + nextNormal);
+        path.push_back(p0.fX);
+        path.push_back(p0.fY);
+    }
+}
+
+void Offset(std::vector<float>& output, float width, std::vector<float>& commands, bool closed, bool reverse) {
+    
+    VPoint firstPoint, nextPoint, prevPoint;
+    VPoint prevNormal = { 0.0, 0.0 };
+    int size = commands.size();
+
+    if (closed == reverse) {
+        firstPoint = { commands[1], commands[2] };
+    } else {
+        firstPoint = { commands[size - 2], commands[size - 1] };
+    }
+
+    int i = 0;
+    while (true) {
+        if (i < commands.size()) {
+            if (reverse) {
+                nextPoint = { commands[ size - (i + 1) * 3 ], commands[size - (i + 1)  * 3] };
+            } else {
+                nextPoint = { commands[i * 3], commands[i * 3] };
+            }
+        } else {
+            nextPoint.fX = firstPoint.fX;
+            nextPoint.fY = firstPoint.fY;
+        }
+
+        if (nextPoint != prevPoint || i == commands.size()) {
+            VPoint nextTangent = nextPoint - prevPoint;
+            VPoint nextNormal = { -nextTangent.fY, nextTangent.fX };
+            float nextNormalLen = nextNormal.Length();
+
+            nextNormal = nextNormalLen == 0.0 ? VPoint::Make( 0.0, 0.0) : nextNormal * (1.0 / nextNormalLen);
+            Join(output, commands, width, prevNormal, nextNormal, prevPoint);
+            prevPoint = nextPoint;
+            prevNormal = nextNormal;
+        }
+        i+=3;
+
+        if (i > commands.size()) 
+            break;
+    }
+}
+
+std::vector<float> Stroke(std::vector<float>& commands, float width) {
+    
+    bool closed = false;
+    std::vector<float> output;
+    uint32_t contour_start = 0;
+    uint32_t contour_end = 0;
+    std::cout << "Stroke 1" << std::endl;
+
+    int i = 0;
+    while (true) {  
+        PathVerb command = static_cast<PathVerb>(commands[i]);
+        if (command == PathVerb::kClose)  {
+            closed = true;
+        }
+
+        if (command == PathVerb::kMove || command == PathVerb::kClose) {
+            if (contour_start != contour_end) {
+                uint32_t base = output.size();
+
+                Offset(output, width, commands, closed, false);
+                output[base] = static_cast<float>(PathVerb::kMove);
+                base = output.size();
+
+                Offset(output, width, commands, closed, true);
+                if (closed) {
+                    output[base] = static_cast<float>(PathVerb::kMove);
+                }
+
+                output.push_back(static_cast<float>(PathVerb::kClose));
+            }
+        }
+
+        switch(command) {
+            case PathVerb::kMove: {
+                contour_start = contour_end;
+                contour_end = contour_start + 1;
+                break;
+            }
+            case PathVerb::kLine: {
+                contour_end += 1;
+                break;
+            }
+            case PathVerb::kClose: {
+                contour_start = contour_end + 1;
+                contour_end = contour_start;
+                closed = true;
+                break;
+            }
+        }
+
+        i += 3;
+        if (i > commands.size()) {
+            break;
+        }
+    }
+    return std::move(output);
+}
 
 struct TileBuilder {
     virtual void Tile(uint32_t w, uint32_t h, std::vector<uint8_t>&tile) = 0;
@@ -40,14 +165,10 @@ struct TileBuilder {
     virtual const uint8_t* GetAtlas() const = 0; 
     virtual const std::vector<Vertex> GetVertices() const = 0; 
     virtual const std::vector<uint32_t> GetIndices() const = 0; 
-
-
 };
 
 void write_to_img(std::string& name, const uint8_t* pdata, int screenWidth, int screenHeight) {
   const int num_components = 1;
-  //unsigned char* pdata = new unsigned char[screenWidth * screenHeight * num_components];
-  //glReadPixels(0, 0, screenWidth, screenHeight, GL_RGBA, GL_UNSIGNED_BYTE, pdata);
 
   FILE* outfile;
   std::string pre = "texture.jpg";
@@ -102,6 +223,7 @@ class Rasterizer {
 public:  
     Rasterizer() : first({0,0}) ,  last({0,0}), tile_y_prev(0) { }
 
+
     void Finish(TileBuilder& builder) {
         if (last != first) {
             LineTo(first);
@@ -131,7 +253,6 @@ public:
             return a.tile_y < b.tile_y;
         });
 
-
         std::vector<float> areas(TILE_SIZE*TILE_SIZE, 0.0f);
         std::vector<float> heights(TILE_SIZE*TILE_SIZE, 0.0f);
         std::vector<float> prev(TILE_SIZE, 0.0f);
@@ -139,6 +260,7 @@ public:
 
         uint32_t tile_increments_i = 0;
         uint8_t winding = 0;
+
         //printf("Num bins: %d increments: %d\n", bins.size(), increments.size());
         for (int i = 0; i < bins.size(); i++) {
             Bin bin = bins[i];
@@ -146,11 +268,14 @@ public:
                 Increment increment = increments[j];
                 uint32_t x = increment.x % TILE_SIZE;
                 uint32_t y = increment.y % TILE_SIZE;
+
                 uint32_t p = y * TILE_SIZE + x;
-                //printf("%d %d %f %f\n", x, y, increment.area, increment.height);
+                printf("%d %d\n", increment.x, increment.y);
+
                 areas[p] += increment.area;
                 heights[p] += increment.height;
             }
+
 
             if (i + 1 == bins.size() || bins[i + 1].tile_x != bin.tile_x || bins[i + 1].tile_y != bin.tile_y) {
                 std::vector<uint8_t> tile(TILE_SIZE*TILE_SIZE);
@@ -176,7 +301,7 @@ public:
 
                 std::fill(next.begin(), next.end(), 0);
 
-                if(i +1 < bins.size() && bins[i + 1].tile_y == bin.tile_y && bins[i + 1].tile_x > bin.tile_x + 1){
+                if (i + 1 < bins.size() && bins[i + 1].tile_y == bin.tile_y && bins[i + 1].tile_x > bin.tile_x + 1) {
                     while (tile_increments_i < tile_increments.size()) {
                         TileIncrement tile_increment = tile_increments[tile_increments_i];
                         if(tile_increment.tile_y > bin.tile_y) break;
@@ -259,7 +384,6 @@ public:
                 i16 tile_y = y / TILE_SIZE;
                 if (tile_y != tile_y_prev) {
                     TileIncrement ti = { x / TILE_SIZE, fmin(tile_y_prev, tile_y), tile_y - tile_y_prev };
-                    //printf("Adding increment: %d %d \n", ti.tile_x, ti.tile_y);
                     tile_increments.push_back(ti);
                     tile_y_prev = tile_y;
                 }
@@ -340,6 +464,37 @@ class PathCmd {
     } 
 };
 
+int pixel_sad8x8_simd(const uint8_t* px1, uint32_t stride1, const uint8_t* px2, uint32_t stride2) {
+    __m128i v1, v2, res, sum;
+
+    sum = _mm_setzero_si128();
+    
+    for (int i = 0; i < 8; i++) {
+        v1 = _mm_loadl_epi64 ((const __m128i*)px1); 
+        v2 = _mm_loadl_epi64 ((const __m128i*)px2); 
+        res = _mm_sad_epu8(v1, v2); 
+        sum = _mm_add_epi16(sum, res);
+
+        px1 += stride1;
+        px2 += stride2;
+    }
+
+    return _mm_extract_epi16(sum, 0); 
+}
+
+uint32_t pixel_sad8x8(const uint8_t* px1, uint32_t stride1, const uint8_t* px2, uint32_t stride2) {
+    uint32_t sum = 0;
+    for (int i = 0; i < 8; i++) {
+        for(int j = 0; j < 8; j++) {
+            sum += abs(px1[j] - px2[j]);
+        } 
+        px1 += stride1;
+        px2 += stride2;
+    }
+
+    return sum;
+}
+
 
 class VertexBuilder: public TileBuilder {
 private:
@@ -361,12 +516,41 @@ public:
     virtual void Tile(uint32_t x, uint32_t y, std::vector<uint8_t>&tile) {
         uint32_t base = vertices.size();
         
+        uint32_t nr = next_row * TILE_SIZE * ATLAS_SIZE;
+        uint32_t nc = next_col * TILE_SIZE;
+
+    
+        for (int row = 0; row < TILE_SIZE; row++) {
+            uint32_t ra = row * ATLAS_SIZE;
+            uint32_t rt = row * TILE_SIZE;
+
+            for (int col = 0; col < TILE_SIZE; col++) {
+                atlas[nr + ra + nc + col] = tile[rt + col];
+            }
+        }
 
         uint16_t u1 = next_col * TILE_SIZE;
         uint16_t u2 = (next_col+1) * TILE_SIZE;
         uint16_t v1 = next_row * TILE_SIZE;
         uint16_t v2 = (next_row+1) * TILE_SIZE;
+        bool found = false;
 
+        const int step = ATLAS_SIZE / TILE_SIZE;
+        for(int i = 1; i < next_col + step * next_row; i++) {
+
+            int sum = pixel_sad8x8_simd(tile.data(), 8, atlas.data() + i * TILE_SIZE, ATLAS_SIZE);
+            if (sum < 100) {
+                uint32_t r = i / step; 
+                uint32_t c = i % step; 
+                u1 = c * TILE_SIZE;
+                u2 = (c+1) * TILE_SIZE;
+                v1 = r * TILE_SIZE;
+                v2 = (r+1) * TILE_SIZE;
+                found = true;
+                break;
+            }
+        }
+        
         Vertex vert0 = { x, y, u1, v1, 255, 0, 0, 255  };
         Vertex vert1 = { x + TILE_SIZE, y, u2, v1, 255, 0, 0, 255  };
         Vertex vert2 = { x + TILE_SIZE, y + TILE_SIZE, u2, v2, 255, 0, 0, 255  };
@@ -380,23 +564,12 @@ public:
         std::vector<uint32_t> new_indices = { base, base + 1, base + 2, base, base + 2, base + 3 };
         indices.insert(indices.end(), std::begin(new_indices), std::end(new_indices));
 
-        uint32_t nr = next_row * TILE_SIZE * ATLAS_SIZE;
-        uint32_t nc = next_col * TILE_SIZE;
-
-
-        for (int row = 0; row < TILE_SIZE; row++) {
-            uint32_t ra = row * ATLAS_SIZE;
-            uint32_t rt = row * TILE_SIZE;
-
-            for (int col = 0; col < TILE_SIZE; col++) {
-                atlas[nr + ra + nc + col] = tile[rt + col];
+        if (!found) {
+            next_col += 1;
+            if (next_col == step) {
+                next_col = 0;
+                next_row += 1;
             }
-        }
-
-        next_col += 1;
-        if (next_col == ATLAS_SIZE / TILE_SIZE) {
-            next_col = 0;
-            next_row += 1;
         }
     };
 
@@ -461,13 +634,13 @@ out vec4 f_col;
 void main() {
     //f_col =  vec4(1.0, 0.0, 0.0, 1.0); //v_col * vec4(texture(tex, v_uv).r);
     f_col =  vec4(1.0, 0.0, 0.0, 1.0) * vec4(1.0, 1.0, 1.0, texture(tex, v_uv).r);
-
 }
 ;)";
 
-
 int main() {
     std::cout << "compiles" << std::endl;
+    const int width = 1280;
+    const int height = 720;
 
     std::vector<float> commands;
     commands.push_back(static_cast<float>(PathVerb::kMove));
@@ -488,23 +661,45 @@ int main() {
 
 
     auto buildCommands = PathCmd::Flatten(commands, TOLERANCE);
+    for(int i = 0; i < buildCommands.size(); i++) printf("-- %f\n", buildCommands[i]);
+    buildCommands = Stroke(buildCommands, 1.f);
+
     Rasterizer r;
-    for(int i = 0; i < buildCommands.size(); i+=3) {
-        if (buildCommands[i] == static_cast<float>(PathVerb::kLine)) {
-            r.LineTo({ buildCommands[i+1], buildCommands[i+2] });
-        } else {
-            r.MoveTo({ buildCommands[i+1], buildCommands[i+2] });
+    for(int i = 0; i < buildCommands.size();) {
+        PathVerb v =  static_cast<PathVerb>(buildCommands[i]);
+
+        printf("%f %f %f\n", buildCommands[i], buildCommands[i+1], buildCommands[i+2]);
+        switch(v) {
+            case PathVerb::kLine:{
+                r.LineTo({ buildCommands[i+1], buildCommands[i+2] });   
+                i+=3;
+                break;
+            }
+            case PathVerb::kMove: {
+                r.MoveTo({ buildCommands[i+1], buildCommands[i+2] });
+                i+=3;
+                break;
+            }
+
+            case PathVerb::kClose: {
+                i++;
+                //r.Close();
+                break;
+            }
         }
     }
     VertexBuilder vb;
+
+    std::cout << "finish" << std::endl;
     r.Finish(vb);
+
+    std::cout << "finish2" << std::endl;
 
     if (!glfwInit()) {
         throw;
     }
 
-    const int width = 1920;
-    const int height = 1080;
+
 
     GLFWwindow* window = glfwCreateWindow(width, height, "Render view", NULL, NULL);
     glfwMakeContextCurrent(window);
@@ -592,9 +787,7 @@ int main() {
         // pass
         glClearColor(1.0, 1.0, 1.0, 1.0);
         glClear(GL_COLOR_BUFFER_BIT);
-
         glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, (void*)0);
-
         glfwSwapBuffers(window);
     }
 }
